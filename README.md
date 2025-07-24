@@ -21,8 +21,6 @@ docker build -t tiny-chatterbox .
 ```
 
 **Build Stats:**
-- Build time: ~4.5 minutes (including model downloads)
-- Final image size: Significantly smaller than conda-based alternatives
 - CPU-only optimized PyTorch (no CUDA dependencies)
 
 **Note**: The optimized build process will:
