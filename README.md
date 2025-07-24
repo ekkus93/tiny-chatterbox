@@ -16,7 +16,7 @@ A lightweight Docker container for text-to-speech synthesis using quantized GGUF
 ### 1. Build the Docker Container
 
 ```bash
-cd /home/phil/work/tiny-chatterbox
+cd <<this directory>>
 docker build -t tiny-chatterbox .
 ```
 
