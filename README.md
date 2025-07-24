@@ -20,6 +20,11 @@ cd <<this directory>>
 docker build -t tiny-chatterbox .
 ```
 
+**For a clean build (no cache):**
+```bash
+docker build --no-cache -t tiny-chatterbox .
+```
+
 **Build Stats:**
 - CPU-only optimized PyTorch (no CUDA dependencies)
 
@@ -60,19 +65,6 @@ Once running, visit these URLs:
 - **Interactive API docs**: http://localhost:8000/docs
 - **ReDoc documentation**: http://localhost:8000/redoc
 - **OpenAPI JSON**: http://localhost:8000/openapi.json
-
-## Container Size Optimization
-
-This version uses several optimizations to reduce container size:
-
-- **Slim base image**: `python:3.10-slim` instead of `continuumio/miniconda3`
-- **Multi-stage build**: Separate build and runtime stages
-- **CPU-only PyTorch**: Eliminates ~3-4GB of CUDA dependencies
-- **Minimal dependencies**: Only essential packages via pip
-- **Model cleanup**: Remove original GGUF files after conversion
-- **Runtime libraries**: Only install libsndfile1 for audio processing
-
-Expected size reduction: ~70% smaller than conda-based version
 
 ## API Usage Examples
 

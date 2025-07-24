@@ -26,10 +26,10 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Clone and install chatterbox - install it directly to site-packages
+# Clone and install chatterbox - create a wheel for later use
 RUN git clone https://github.com/resemble-ai/chatterbox.git /tmp/chatterbox && \
     cd /tmp/chatterbox && \
-    FORCE_CUDA=0 pip install --no-cache-dir . --extra-index-url https://download.pytorch.org/whl/cpu
+    FORCE_CUDA=0 pip wheel --no-cache-dir . --wheel-dir /app/wheels --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Clone gguf-connector (only the needed parts)
 RUN git clone https://github.com/calcuis/gguf-connector.git /tmp/gguf-connector
@@ -70,11 +70,20 @@ ENV TORCH_CUDA_ARCH_LIST=""
 ENV FORCE_CUDA="0"
 ENV CUDA_VISIBLE_DEVICES=""
 
-# Copy Python packages from builder
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Install only runtime Python dependencies (much smaller)
+COPY requirements.txt .
+RUN pip install --no-cache-dir \
+    torch==2.5.1+cpu \
+    torchaudio==2.5.1+cpu \
+    --index-url https://download.pytorch.org/whl/cpu \
+    --no-deps && \
+    pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Copy converted model files and app
+# Install chatterbox from pre-built wheel
+COPY --from=builder /app/wheels /tmp/wheels
+RUN pip install --no-cache-dir /tmp/wheels/*.whl && rm -rf /tmp/wheels
+
+# Copy only the essential files from builder
 COPY --from=builder /app/models /app/models
 COPY --from=builder /app/tokenizer.json /app/tokenizer.json
 COPY --from=builder /app/main.py /app/main.py
