@@ -38,9 +38,10 @@ RUN git clone https://github.com/ekkus93/voice_samples.git /tmp/voice_samples &&
     cp /tmp/voice_samples/voice_samples/*.mp3 /app/voice_samples/ && \
     rm -rf /tmp/voice_samples
 
-# Clone your quantization-enabled chatterbox repo
+# Clone your quantization-enabled chatterbox repo at a specific tag
 RUN git clone https://github.com/ekkus93/chatterbox.git /tmp/chatterbox && \
     cd /tmp/chatterbox && \
+    git checkout v0.1 && \
     FORCE_CUDA=0 pip install --no-cache-dir . --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Create models directory

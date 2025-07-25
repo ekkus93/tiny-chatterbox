@@ -154,113 +154,41 @@ async def speak(
     if not text.strip():
         raise HTTPException(status_code=400, detail="Text input is empty.")
 
+    ref_audio_path = None
     temp_dir = None
-    
+
     try:
-        # Only create a temporary directory if absolutely needed
-        temp_dir = tempfile.TemporaryDirectory()
-        
-        # Determine the reference audio source
-        ref_audio_path = None
-        in_memory_audio = None
-        
+        # Only create a temp dir if needed
         if voice_sample:
-            print(f"Using uploaded voice sample: {voice_sample.filename}")
             contents = await voice_sample.read()
-            
+            format_hint = os.path.splitext(voice_sample.filename)[1][1:].lower() if voice_sample.filename else 'wav'
             try:
-                # Process the audio in memory
-                format_hint = os.path.splitext(voice_sample.filename)[1][1:].lower() if voice_sample.filename else 'wav'
                 audio_data, sr = process_in_memory_audio(contents, format_hint)
-                print(f"Successfully loaded in-memory audio: {len(audio_data)} samples at {sr}Hz")
-                
-                # Generate a virtual path for this audio
                 in_memory_path = f"memory://uploaded_{uuid.uuid4()}.wav"
-                
-                # Store the audio data in the model
                 if not hasattr(tts_model, '_memory_files'):
                     tts_model._memory_files = {}
                 tts_model._memory_files[in_memory_path] = (contents, sr)
-                
                 ref_audio_path = in_memory_path
-                print(f"Using in-memory audio reference: {ref_audio_path}")
-            except Exception as e:
-                print(f"Failed to process audio in memory: {e}. Falling back to disk.")
-                # Fall back to disk-based processing
-                original_ext = os.path.splitext(voice_sample.filename)[1].lower() if voice_sample.filename else ".wav"
-                if not original_ext or original_ext not in ['.wav', '.mp3', '.flac', '.ogg']:
-                    original_ext = ".wav"
-                    
-                temp_file = tempfile.NamedTemporaryFile(delete=False, 
-                                                       suffix=original_ext, 
-                                                       dir=temp_dir.name)
+            except Exception:
+                temp_dir = tempfile.TemporaryDirectory()
+                ext = os.path.splitext(voice_sample.filename)[1].lower() or ".wav"
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=ext, dir=temp_dir.name)
                 temp_file.write(contents)
                 temp_file.close()
                 ref_audio_path = temp_file.name
-                print(f"Saved audio to temporary file: {ref_audio_path}")
         elif voice_sample_name:
-            # Validate voice_sample_name to prevent path traversal
             if not re.match(r'^[a-zA-Z0-9_\-.]+\.(wav|mp3|flac|ogg)$', voice_sample_name):
-                raise HTTPException(
-                    status_code=400, 
-                    detail="Invalid voice sample name. Must be alphanumeric with extensions .wav, .mp3, .flac, or .ogg"
-                )
-            
-            # Construct safe path to the voice sample
+                raise HTTPException(status_code=400, detail="Invalid voice sample name.")
             safe_path = os.path.join("/app/voice_samples", voice_sample_name)
-            
-            # Ensure the path doesn't escape the voice_samples directory
-            if not os.path.abspath(safe_path).startswith("/app/voice_samples/"):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid voice sample path"
-                )
-            
-            if not os.path.exists(safe_path):
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Voice sample '{voice_sample_name}' not found"
-                )
-                
-            print(f"Using voice sample from library: {voice_sample_name}")
+            if not os.path.abspath(safe_path).startswith("/app/voice_samples/") or not os.path.exists(safe_path):
+                raise HTTPException(status_code=404, detail=f"Voice sample '{voice_sample_name}' not found")
             ref_audio_path = safe_path
         else:
-            # Use default reference audio (minah1.wav or synthetic)
-            print("No voice sample provided, using default reference audio")
+            # Use the already defined default_voice_path variable
             ref_audio_path = default_voice_path
-        print(f"Reference audio path: {ref_audio_path}")
-
-        print(f"Using reference audio: {ref_audio_path}")
-        
-        # Verify the reference file exists and is readable
-        if not os.path.exists(ref_audio_path):
-            raise HTTPException(status_code=500, detail=f"Reference audio file not found: {ref_audio_path}")
-        
-        # Check file size and contents
-        file_size = os.path.getsize(ref_audio_path)
-        print(f"Reference audio file size: {file_size} bytes")
-        
-        # Try to read the audio file to validate it
-        try:
-            data, sr = sf.read(ref_audio_path)
-            print(f"Audio file validation: {len(data)} samples at {sr} Hz")
-        except Exception as audio_error:
-            print(f"Audio file validation failed: {audio_error}")
-            raise HTTPException(status_code=500, detail=f"Invalid audio file: {audio_error}")
 
         # Prepare conditionals and generate speech
-        print("Preparing conditionals...")
-        try:
-            tts_model.prepare_conditionals(ref_audio_path, exaggeration=0.5)
-            print("Conditionals prepared successfully")
-        except Exception as cond_error:
-            print(f"Error preparing conditionals: {cond_error}")
-            print(f"Error type: {type(cond_error)}")
-            import traceback
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Failed to prepare conditionals: {cond_error}")
-        
-        print("Generating speech...")
+        tts_model.prepare_conditionals(ref_audio_path, exaggeration=0.5)
         audio_data = tts_model.generate(
             text=text,
             temperature=0.8,
@@ -275,7 +203,6 @@ async def speak(
         sf.write(wav_bytes_io, audio_data, tts_model.sr, format='WAV')
         wav_bytes_io.seek(0)
 
-        print("Speech generation completed successfully")
         return StreamingResponse(
             wav_bytes_io,
             media_type="audio/wav",
@@ -285,19 +212,15 @@ async def speak(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in TTS generation: {str(e)}")
-        print(f"Error type: {type(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
     finally:
-        # Clean up temporary directory and all files inside it
         if temp_dir is not None:
             try:
                 temp_dir.cleanup()
-                print(f"Cleaned up temporary directory")
-            except Exception as cleanup_error:
-                print(f"Warning: Failed to clean up temporary directory: {cleanup_error}")
+            except Exception:
+                pass
 
 @app.get("/list_voices", response_class=JSONResponse)
 async def list_voices():
@@ -343,4 +266,3 @@ async def list_voices():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000)
-
