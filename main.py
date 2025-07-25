@@ -12,31 +12,44 @@ from chatterbox.models.voice_encoder import VoiceEncoder
 from chatterbox.models.t3 import T3
 from chatterbox.models.s3gen import S3Gen
 from chatterbox.models.tokenizers import EnTokenizer
+from chatterbox.quantization.quantize import load_quantized_model
 from safetensors.torch import load_file
 
 app = FastAPI()
 
 MODEL_DIR = "/app/models/box"
 TOKENIZER_PATH = "/app/tokenizer.json"
-VAE_ST = os.path.join(MODEL_DIR, "ve_fp32-f16-f32.safetensors")
-T3_ST = os.path.join(MODEL_DIR, "t3_cfg-q4_k_m-f32.safetensors")
-S3GEN_ST = os.path.join(MODEL_DIR, "s3gen-bf16-f32.safetensors")
+VAE_ST = os.path.join(MODEL_DIR, "ve.safetensors")
+
+# Dynamic model loading based on what's available
+def get_model_path(base_name):
+    """Get the best available model (quantized if available, original otherwise)"""
+    quantized_path = os.path.join(MODEL_DIR, f"{base_name}_int8.pt")
+    original_path = os.path.join(MODEL_DIR, f"{base_name}_original.safetensors")
+    
+    if os.path.exists(quantized_path):
+        return quantized_path, "quantized"
+    elif os.path.exists(original_path):
+        return original_path, "original"
+    else:
+        raise FileNotFoundError(f"No model found for {base_name}")
 
 def load_chatterbox_model(device="cpu"):
+    # Load voice encoder
     ve = VoiceEncoder()
     ve.load_state_dict(load_file(VAE_ST))
     ve.eval()
 
-    t3 = T3()
-    t3_state = load_file(T3_ST)
-    if "model" in t3_state.keys():
-        t3_state = t3_state["model"][0]
-    t3.load_state_dict(t3_state)
-    t3.eval()
+    # Load quantized T3 model using the proper quantization support
+    print("Loading quantized T3 model...")
+    t3, _ = load_quantized_model(T3, os.path.join(MODEL_DIR, "t3_cfg_int8.pt"), device)
+    t3.to(device).eval()
 
+    # Load original S3Gen model (NOT quantized)
+    print("Loading original S3Gen model...")
     s3gen = S3Gen()
-    s3gen.load_state_dict(load_file(S3GEN_ST), strict=False)
-    s3gen.eval()
+    s3gen.load_state_dict(load_file("/app/s3gen.safetensors"), strict=False)
+    s3gen.to(device).eval()
 
     tokenizer = EnTokenizer(TOKENIZER_PATH)
 
@@ -179,3 +192,4 @@ async def speak(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000)
+

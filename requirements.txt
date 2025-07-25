@@ -22,6 +22,9 @@ scipy==1.11.4
 # Chatterbox dependencies
 einops==0.8.1
 
+# Quantization support
+torch>=1.11.0  # Ensure we have quantization support
+
 # Explicitly avoid CUDA packages
 --extra-index-url https://download.pytorch.org/whl/cpu
 # Remove all nvidia-* packages - not needed for CPU
