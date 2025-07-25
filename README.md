@@ -51,6 +51,30 @@ curl -X POST "http://localhost:8000/speak" \
   --output generated_speech.wav
 ```
 
+**With voice from library:**
+```bash
+# First, list available voices
+curl -X GET "http://localhost:8000/list_voices" | jq
+
+# Then use a specific voice by name
+curl -X POST "http://localhost:8000/speak" \
+  -F "text=This is using a voice from the built-in library." \
+  -F "voice_sample_name=adam1_ElevenLabs.mp3" \
+  --output library_voice_speech.wav
+```
+
+**With specific reference voice file:**
+```bash
+# Download a sample voice reference
+wget https://github.com/resemble-ai/chatterbox/raw/main/examples/reference_voice.wav
+
+# Use the reference voice for TTS
+curl -X POST "http://localhost:8000/speak" \
+  -F "text=This is my voice speaking through the Tiny Chatterbox TTS system." \
+  -F "voice_sample=@reference_voice.wav" \
+  --output custom_voice_speech.wav
+```
+
 ## Model Information
 
 - **Voice Encoder**: ve.safetensors (FP32, ~50MB) - Not quantized due to small size
@@ -77,7 +101,6 @@ Once running, visit:
 ## License
 
 MIT License - see original Chatterbox repository for details.
-```
 
 #### TTS without reference audio (using default voice):
 
@@ -129,3 +152,43 @@ Total model size: ~650MB (significantly smaller than original models)
 ## License
 
 MIT License - see original Chatterbox repository for details.
+
+## API Endpoints
+
+### `/speak` (POST)
+Generate speech from text with voice cloning capabilities.
+
+**Parameters:**
+- `text` (required): The text to convert to speech
+- `voice_sample`: Upload a reference audio file for voice cloning
+- `voice_sample_name`: Alternatively, use a voice from the built-in library
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8000/speak" \
+  -F "text=Hello, this is a test." \
+  -F "voice_sample_name=minah1.wav" \
+  --output output.wav
+```
+
+### `/list_voices` (GET)
+List all available voice samples in the built-in library.
+
+**Example:**
+```bash
+curl -X GET "http://localhost:8000/list_voices"
+```
+
+**Response:**
+```json
+{
+  "voices": [
+    {
+      "filename": "adam1_ElevenLabs.mp3",
+      "size_bytes": 1234567,
+      "extension": ".mp3"
+    },
+    // ...more voices
+  ]
+}
+```

@@ -32,6 +32,12 @@ RUN wget -O /app/t3_cfg.safetensors https://huggingface.co/ResembleAI/chatterbox
 RUN wget -O /app/s3gen.safetensors https://huggingface.co/ResembleAI/chatterbox/resolve/main/s3gen.safetensors
 RUN wget -O /app/tokenizer.json https://huggingface.co/ResembleAI/chatterbox/resolve/main/tokenizer.json
 
+# Clone voice samples repository and organize them
+RUN git clone https://github.com/ekkus93/voice_samples.git /tmp/voice_samples && \
+    mkdir -p /app/voice_samples && \
+    cp /tmp/voice_samples/voice_samples/*.mp3 /app/voice_samples/ && \
+    rm -rf /tmp/voice_samples
+
 # Clone your quantization-enabled chatterbox repo
 RUN git clone https://github.com/ekkus93/chatterbox.git /tmp/chatterbox && \
     cd /tmp/chatterbox && \
@@ -47,9 +53,9 @@ RUN python /app/quantize_models.py
 # Clean up only the processed model files (keep s3gen.safetensors for direct use)
 RUN rm /app/ve.safetensors /app/t3_cfg.safetensors
 
-# Copy FastAPI app and reference audio
+# Copy FastAPI app and reference audio folder
 COPY main.py /app/main.py
-COPY minah1.wav /app/minah1.wav
+COPY voice_samples/ /app/voice_samples/
 
 # ---- Final stage ----
 FROM python:3.10-slim
@@ -75,7 +81,7 @@ COPY --from=builder /app/models /app/models
 COPY --from=builder /app/s3gen.safetensors /app/s3gen.safetensors
 COPY --from=builder /app/tokenizer.json /app/tokenizer.json
 COPY --from=builder /app/main.py /app/main.py
-COPY --from=builder /app/minah1.wav /app/minah1.wav
+COPY --from=builder /app/voice_samples /app/voice_samples
 
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

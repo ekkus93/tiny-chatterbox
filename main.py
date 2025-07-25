@@ -1,11 +1,14 @@
 import os
 import io
+import uuid
+import tempfile
 import torch
 import numpy as np
 import soundfile as sf
+import re
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import StreamingResponse
-from typing import Optional
+from fastapi.responses import StreamingResponse, JSONResponse
+from typing import Optional, List
 
 from chatterbox.tts import ChatterboxTTS
 from chatterbox.models.voice_encoder import VoiceEncoder
@@ -20,6 +23,13 @@ app = FastAPI()
 MODEL_DIR = "/app/models/box"
 TOKENIZER_PATH = "/app/tokenizer.json"
 VAE_ST = os.path.join(MODEL_DIR, "ve.safetensors")
+
+# Debug: Check if default voice exists
+default_voice_path = "/app/voice_samples/minah1.wav"
+if os.path.exists(default_voice_path):
+    print(f"✓ default voice found at {default_voice_path}, size: {os.path.getsize(default_voice_path)} bytes")
+else:
+    print(f"✗ default voice NOT found at {default_voice_path}")
 
 # Dynamic model loading based on what's available
 def get_model_path(base_name):
@@ -62,71 +72,78 @@ def load_chatterbox_model(device="cpu"):
     )
     return model
 
-def create_default_reference_audio():
-    """Create a synthetic reference audio for default voice conditioning"""
-    # Use the provided minah1.wav file as default reference
-    default_path = "/app/minah1.wav"
-    if os.path.exists(default_path):
-        print(f"Using default reference audio: {default_path}")
-        return default_path
-    
-    print("minah1.wav not found, creating synthetic reference audio...")
-    # Fallback: create a simple sine wave at 440Hz (A4 note) for 1 second
-    sample_rate = 22050  # S3GEN_SR
-    duration = 1.0
-    frequency = 440.0
-    
-    t = np.linspace(0, duration, int(sample_rate * duration), False)
-    # Create a simple tone with some harmonics to make it more voice-like
-    audio = (np.sin(2 * np.pi * frequency * t) * 0.3 + 
-             np.sin(2 * np.pi * frequency * 2 * t) * 0.2 +
-             np.sin(2 * np.pi * frequency * 3 * t) * 0.1)
-    
-    # Add some envelope to make it more natural
-    envelope = np.exp(-t * 2)  # Exponential decay
-    audio = audio * envelope
-    
-    # Save to temporary file
-    temp_path = "/tmp/default_ref.wav"
-    sf.write(temp_path, audio.astype(np.float32), sample_rate)
-    print(f"Created synthetic reference audio: {temp_path}")
-    return temp_path
-
 # Load the model and create default reference at startup
 print("Loading Chatterbox TTS model...")
 tts_model = load_chatterbox_model()
 print("Creating default reference audio...")
-default_ref_path = create_default_reference_audio()
-print(f"Default reference path: {default_ref_path}")
-
-# Debug: Check if minah1.wav exists
-minah_path = "/app/minah1.wav"
-if os.path.exists(minah_path):
-    print(f"✓ minah1.wav found at {minah_path}, size: {os.path.getsize(minah_path)} bytes")
-else:
-    print("✗ minah1.wav NOT found at /app/minah1.wav")
+print(f"Default voice path: {default_voice_path}")
 
 @app.post("/speak", response_class=StreamingResponse)
 async def speak(
     text: str = Form(...),
-    voice_sample: Optional[UploadFile] = File(None)
+    voice_sample: Optional[UploadFile] = File(None),
+    voice_sample_name: Optional[str] = Form(None)
 ):
     if not text.strip():
         raise HTTPException(status_code=400, detail="Text input is empty.")
 
+    temp_dir = None
+    
     try:
+        # Create a temporary directory for this request
+        temp_dir = tempfile.TemporaryDirectory()
+        
         # Save uploaded reference audio to a temp file if provided
         ref_audio_path = None
+        
         if voice_sample:
             print(f"Using uploaded voice sample: {voice_sample.filename}")
             contents = await voice_sample.read()
-            ref_audio_path = "/tmp/ref.wav"
-            with open(ref_audio_path, "wb") as f:
-                f.write(contents)
+            
+            # Get extension from original filename or default to .wav
+            original_ext = os.path.splitext(voice_sample.filename)[1].lower() if voice_sample.filename else ".wav"
+            if not original_ext or original_ext not in ['.wav', '.mp3', '.flac', '.ogg']:
+                original_ext = ".wav"  # Default to .wav if no valid extension
+                
+            # Create a temporary file with the appropriate extension
+            temp_file = tempfile.NamedTemporaryFile(delete=False, 
+                                                   suffix=original_ext, 
+                                                   dir=temp_dir.name)
+            temp_file.write(contents)
+            temp_file.close()
+            ref_audio_path = temp_file.name
+            
+        elif voice_sample_name:
+            # Validate voice_sample_name to prevent path traversal
+            if not re.match(r'^[a-zA-Z0-9_\-.]+\.(wav|mp3|flac|ogg)$', voice_sample_name):
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Invalid voice sample name. Must be alphanumeric with extensions .wav, .mp3, .flac, or .ogg"
+                )
+            
+            # Construct safe path to the voice sample
+            safe_path = os.path.join("/app/voice_samples", voice_sample_name)
+            
+            # Ensure the path doesn't escape the voice_samples directory
+            if not os.path.abspath(safe_path).startswith("/app/voice_samples/"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid voice sample path"
+                )
+            
+            if not os.path.exists(safe_path):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Voice sample '{voice_sample_name}' not found"
+                )
+                
+            print(f"Using voice sample from library: {voice_sample_name}")
+            ref_audio_path = safe_path
         else:
             # Use default reference audio (minah1.wav or synthetic)
             print("No voice sample provided, using default reference audio")
-            ref_audio_path = default_ref_path
+            ref_audio_path = default_voice_path
+        print(f"Reference audio path: {ref_audio_path}")
 
         print(f"Using reference audio: {ref_audio_path}")
         
@@ -188,6 +205,55 @@ async def speak(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+    finally:
+        # Clean up temporary directory and all files inside it
+        if temp_dir is not None:
+            try:
+                temp_dir.cleanup()
+                print(f"Cleaned up temporary directory")
+            except Exception as cleanup_error:
+                print(f"Warning: Failed to clean up temporary directory: {cleanup_error}")
+
+@app.get("/list_voices", response_class=JSONResponse)
+async def list_voices():
+    """
+    Return a list of all available voice sample files in the /app/voice_samples directory.
+    Each entry includes filename, size in bytes, and file extension.
+    """
+    voice_samples_dir = "/app/voice_samples"
+    
+    try:
+        if not os.path.exists(voice_samples_dir):
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Voice samples directory not found: {voice_samples_dir}"}
+            )
+        
+        # Get all files in the directory
+        files = os.listdir(voice_samples_dir)
+        
+        # Filter for audio files and collect metadata
+        voice_files = []
+        for filename in files:
+            filepath = os.path.join(voice_samples_dir, filename)
+            if os.path.isfile(filepath):
+                file_ext = os.path.splitext(filename)[1].lower()
+                # Include common audio formats
+                if file_ext in ['.wav', '.mp3', '.flac', '.ogg']:
+                    voice_files.append({
+                        "filename": filename,
+                        "size_bytes": os.path.getsize(filepath),
+                        "extension": file_ext
+                    })
+        
+        return {"voices": voice_files}
+        
+    except Exception as e:
+        print(f"Error listing voice files: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to list voice files: {str(e)}"}
+        )
 
 if __name__ == "__main__":
     import uvicorn
