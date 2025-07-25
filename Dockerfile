@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir \
 
 # Copy requirements and install remaining Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Download original safetensors models (not GGUF)
 RUN wget -O /app/ve.safetensors https://huggingface.co/ResembleAI/chatterbox/resolve/main/ve.safetensors

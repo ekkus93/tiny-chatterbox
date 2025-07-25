@@ -78,6 +78,73 @@ tts_model = load_chatterbox_model()
 print("Creating default reference audio...")
 print(f"Default voice path: {default_voice_path}")
 
+# Add this function to handle in-memory audio processing
+def process_in_memory_audio(audio_bytes, format_hint=None):
+    """Process audio data directly from memory without writing to disk"""
+    # Default to WAV if no format hint provided
+    format_hint = format_hint or 'wav'
+    
+    # Use BytesIO to create a file-like object in memory
+    audio_buffer = io.BytesIO(audio_bytes)
+    
+    try:
+        # Use soundfile to read directly from the in-memory buffer
+        data, sample_rate = sf.read(audio_buffer, format=format_hint)
+        return data, sample_rate
+    except Exception as e:
+        print(f"Error reading in-memory audio: {e}")
+        raise e
+
+# Extend ChatterboxTTS with a method to handle in-memory audio
+def add_prepare_from_array_method():
+    """Monkey patch ChatterboxTTS to handle audio arrays directly"""
+    original_prepare_conditionals = ChatterboxTTS.prepare_conditionals
+    
+    def prepare_from_array(self, audio_array, sr, exaggeration=0.0):
+        """Process audio directly from a numpy array with sample rate"""
+        # Create a temporary file in memory
+        with io.BytesIO() as buf:
+            # Write the audio data to the in-memory buffer
+            sf.write(buf, audio_array, sr, format='WAV')
+            buf.seek(0)
+            
+            # Create a temporary file path just for the API
+            temp_path = f"memory://audio_{uuid.uuid4()}.wav"
+            
+            # Store the audio data for this path
+            if not hasattr(self, '_memory_files'):
+                self._memory_files = {}
+            self._memory_files[temp_path] = (buf.read(), sr)
+            
+            # Call the original method with our virtual path
+            return original_prepare_conditionals(self, temp_path, exaggeration)
+    
+    # Save the original method
+    if not hasattr(ChatterboxTTS, '_original_prepare_conditionals'):
+        ChatterboxTTS._original_prepare_conditionals = original_prepare_conditionals
+    
+    # Replace the prepare_conditionals method with our custom version that handles the memory:// scheme
+    def prepare_conditionals_wrapper(self, audio_path, exaggeration=0.0):
+        if audio_path.startswith('memory://'):
+            if hasattr(self, '_memory_files') and audio_path in self._memory_files:
+                audio_data, sr = self._memory_files[audio_path]
+                # Process from the stored audio data
+                audio_buffer = io.BytesIO(audio_data)
+                audio_array, sr = sf.read(audio_buffer)
+                return self.prepare_from_array(audio_array, sr, exaggeration)
+            else:
+                raise ValueError(f"Memory audio not found: {audio_path}")
+        else:
+            # Use the original method for file paths
+            return original_prepare_conditionals(self, audio_path, exaggeration)
+    
+    # Add our methods to the class
+    ChatterboxTTS.prepare_from_array = prepare_from_array
+    ChatterboxTTS.prepare_conditionals = prepare_conditionals_wrapper
+
+# Apply the monkey patch
+add_prepare_from_array_method()
+
 @app.post("/speak", response_class=StreamingResponse)
 async def speak(
     text: str = Form(...),
@@ -90,29 +157,47 @@ async def speak(
     temp_dir = None
     
     try:
-        # Create a temporary directory for this request
+        # Only create a temporary directory if absolutely needed
         temp_dir = tempfile.TemporaryDirectory()
         
-        # Save uploaded reference audio to a temp file if provided
+        # Determine the reference audio source
         ref_audio_path = None
+        in_memory_audio = None
         
         if voice_sample:
             print(f"Using uploaded voice sample: {voice_sample.filename}")
             contents = await voice_sample.read()
             
-            # Get extension from original filename or default to .wav
-            original_ext = os.path.splitext(voice_sample.filename)[1].lower() if voice_sample.filename else ".wav"
-            if not original_ext or original_ext not in ['.wav', '.mp3', '.flac', '.ogg']:
-                original_ext = ".wav"  # Default to .wav if no valid extension
+            try:
+                # Process the audio in memory
+                format_hint = os.path.splitext(voice_sample.filename)[1][1:].lower() if voice_sample.filename else 'wav'
+                audio_data, sr = process_in_memory_audio(contents, format_hint)
+                print(f"Successfully loaded in-memory audio: {len(audio_data)} samples at {sr}Hz")
                 
-            # Create a temporary file with the appropriate extension
-            temp_file = tempfile.NamedTemporaryFile(delete=False, 
-                                                   suffix=original_ext, 
-                                                   dir=temp_dir.name)
-            temp_file.write(contents)
-            temp_file.close()
-            ref_audio_path = temp_file.name
-            
+                # Generate a virtual path for this audio
+                in_memory_path = f"memory://uploaded_{uuid.uuid4()}.wav"
+                
+                # Store the audio data in the model
+                if not hasattr(tts_model, '_memory_files'):
+                    tts_model._memory_files = {}
+                tts_model._memory_files[in_memory_path] = (contents, sr)
+                
+                ref_audio_path = in_memory_path
+                print(f"Using in-memory audio reference: {ref_audio_path}")
+            except Exception as e:
+                print(f"Failed to process audio in memory: {e}. Falling back to disk.")
+                # Fall back to disk-based processing
+                original_ext = os.path.splitext(voice_sample.filename)[1].lower() if voice_sample.filename else ".wav"
+                if not original_ext or original_ext not in ['.wav', '.mp3', '.flac', '.ogg']:
+                    original_ext = ".wav"
+                    
+                temp_file = tempfile.NamedTemporaryFile(delete=False, 
+                                                       suffix=original_ext, 
+                                                       dir=temp_dir.name)
+                temp_file.write(contents)
+                temp_file.close()
+                ref_audio_path = temp_file.name
+                print(f"Saved audio to temporary file: {ref_audio_path}")
         elif voice_sample_name:
             # Validate voice_sample_name to prevent path traversal
             if not re.match(r'^[a-zA-Z0-9_\-.]+\.(wav|mp3|flac|ogg)$', voice_sample_name):
@@ -198,7 +283,7 @@ async def speak(
         )
 
     except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
         print(f"Error in TTS generation: {str(e)}")
         print(f"Error type: {type(e)}")
